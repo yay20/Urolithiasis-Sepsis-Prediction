@@ -9,6 +9,7 @@ library(dcurves)
 library(ggplot2)
 library(dplyr)
 
+if (!dir.exists("Figures")) dir.create("Figures")
 
 # ------------------------------------------------------------------------------
 # 1. Data Ingestion & Linear Predictors
@@ -25,7 +26,6 @@ test_data$lp  <- predict(cox_model, newdata = test_data,  type = "lp")
 # ------------------------------------------------------------------------------
 # 2. Cut-off Determination & Risk Stratification
 # ------------------------------------------------------------------------------
-# Derive optimal threshold from training set
 roc_train <- timeROC(
   T = train_data$time, delta = train_data$event, marker = train_data$lp,
   cause = 1, times = 7, weighting = "marginal", ROC = FALSE, iid = FALSE
@@ -34,14 +34,12 @@ roc_train <- timeROC(
 opt_idx    <- which.max(roc_train$TP[, 1] - roc_train$FP[, 1])
 cutoff_val <- roc_train$cumulative_stats[opt_idx]
 
-# Map risk strata to both cohorts
 train_data$risk_group <- factor(ifelse(train_data$lp > cutoff_val, "High risk", "Low risk"), levels = c("Low risk", "High risk"))
 test_data$risk_group  <- factor(ifelse(test_data$lp > cutoff_val, "High risk", "Low risk"), levels = c("Low risk", "High risk"))
 
 # ------------------------------------------------------------------------------
 # 3. Standard Kaplan-Meier Plotting Engine
 # ------------------------------------------------------------------------------
-# Generic function to execute survival analysis and export high-resolution plots
 plot_km_pipeline <- function(df, strata_var, title_label, filename_prefix) {
   fit_obj <- survfit(as.formula(paste("Surv(time, event) ~", strata_var)), data = df)
   
@@ -71,39 +69,23 @@ plot_km_pipeline <- function(df, strata_var, title_label, filename_prefix) {
 # ------------------------------------------------------------------------------
 # 4. Multivariable & Univariable K-M Evaluation
 # ------------------------------------------------------------------------------
-# 4.1 Primary Model-Stratified Analysis
+# 4.1 Primary Model-Stratified Analysis 
 plot_km_pipeline(test_data, "risk_group", "Model Risk Stratification", "KM_Model_Stratification")
 
-# 4.2 Univariable Predictor Analysis
+# 4.2 Univariable Categorical Predictor Analysis 
 df_eval <- test_data
 
-# Automatically identify categorical/binary features (analyzed by natural subgroups)
+# Automatically select only categorical and binary features
 cat_vars <- names(df_eval)[sapply(df_eval, function(x) is.factor(x) || length(unique(na.omit(x))) == 2)]
 cat_vars <- setdiff(cat_vars, c("event", "risk_group"))
 
-# Automatically identify continuous features (dichotomized by training set median)
-cont_vars <- names(df_eval)[sapply(df_eval, is.numeric)]
-cont_vars <- setdiff(cont_vars, c("time", "event", "lp", "pred_risk", cat_vars))
-
-dichotomized_vars <- c()
-for (v in cont_vars) {
-  med_val <- median(train_data[[v]], na.rm = TRUE)
-  grp_col <- paste0(v, "_group")
-  df_eval[[grp_col]] <- factor(ifelse(df_eval[[v]] > med_val, "High", "Low"), levels = c("Low", "High"))
-  dichotomized_vars  <- c(dichotomized_vars, grp_col)
-}
-
-# Combine all univariable features for batch pipeline execution
-univariable_targets <- c(cat_vars, dichotomized_vars)
-
-for (target in univariable_targets) {
+for (target in cat_vars) {
   plot_km_pipeline(df_eval, target, paste("Univariable Stratification:", target), paste0("KM_Univariable_", target))
 }
 
 # ------------------------------------------------------------------------------
-# 5. Decision Curve Analysis (DCA) Across Horizons
+# 5. Decision Curve Analysis (DCA) Across Horizons 
 # ------------------------------------------------------------------------------
-# Baseline survival estimation
 calc_s0 <- function(model_obj, t) {
   bh  <- basehaz(model_obj, centered = TRUE)
   idx <- which(bh$time <= t)
@@ -111,7 +93,6 @@ calc_s0 <- function(model_obj, t) {
   exp(-bh$hazard[max(idx)])
 }
 
-# Multi-horizon DCA evaluation
 for (h in eval_horizons) {
   s0_h <- calc_s0(cox_model, h)
   risk_col <- paste0("risk_", h, "d")
